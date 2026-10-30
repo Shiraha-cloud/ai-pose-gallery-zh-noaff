@@ -183,10 +183,14 @@ main{padding:22px 0 54px}
 .footer-copy strong{color:var(--text)}
 .footer-copy p{margin:0 0 5px}
 .viewer{position:fixed;inset:0;z-index:100;display:grid;place-items:center;padding:28px;background:rgba(15,18,28,.76);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
-.viewer-panel{position:relative;width:min(1180px,100%);height:min(850px,92dvh);display:grid;grid-template-columns:minmax(0,1fr) 330px;background:var(--surface);border-radius:20px;overflow:hidden;box-shadow:0 28px 90px rgba(0,0,0,.35)}
-.viewer-stage{position:relative;min-width:0;min-height:0;display:grid;place-items:center;background:#eef0f4;overflow:hidden;touch-action:pan-y}
-.viewer-image{display:block;width:100%;height:100%;object-fit:contain;user-select:none;-webkit-user-drag:none}
+.viewer-panel{position:relative;width:min(1180px,100%);height:min(850px,92dvh);display:grid;grid-template-columns:minmax(0,1fr) 330px;grid-template-rows:minmax(0,1fr);background:var(--surface);border-radius:20px;overflow:hidden;box-shadow:0 28px 90px rgba(0,0,0,.35)}
+.viewer-stage{position:relative;min-width:0;min-height:0;background:#eef0f4;overflow:hidden;touch-action:pan-y}
+.viewer-image{position:absolute;left:0;top:0;display:block;width:100%;height:100%;object-fit:contain;transform-origin:center center;will-change:transform;user-select:none;-webkit-user-drag:none}
 .viewer-image.is-loading{opacity:.72}
+.viewer-stage.is-zoomed{cursor:grab}
+.viewer-stage.is-zoomed.is-dragging{cursor:grabbing}
+.viewer-zoom{position:absolute;right:14px;bottom:14px;z-index:4;height:30px;padding:0 12px;border:1px solid var(--line);border-radius:99px;background:rgba(255,255,255,.92);color:var(--text-2);font:11px/1 ui-monospace,SFMono-Regular,Menlo,monospace;cursor:pointer;box-shadow:0 4px 16px rgba(20,25,40,.07)}
+.viewer-zoom:hover{background:#fff;color:var(--accent)}
 .image-status{position:absolute;left:50%;bottom:16px;transform:translateX(-50%);padding:5px 11px;border-radius:99px;background:rgba(23,26,33,.72);color:#fff;font-size:11px;pointer-events:none}
 .viewer-close{position:absolute;right:14px;top:14px;z-index:4;width:42px;height:42px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.94);color:var(--text);display:grid;place-items:center;cursor:pointer;box-shadow:0 4px 16px rgba(20,25,40,.08)}
 .viewer-close:hover{background:#fff;color:var(--accent)}
@@ -427,6 +431,7 @@ main{padding:22px 0 54px}
       <span class="image-status" id="imageStatus" hidden>正在加载原图…</span>
       <button class="viewer-nav prev" id="anglePrev" type="button" aria-label="上一个角度"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="m15 5-7 7 7 7"/></svg></button>
       <button class="viewer-nav next" id="angleNext" type="button" aria-label="下一个角度"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="m9 5 7 7-7 7"/></svg></button>
+      <button class="viewer-zoom" id="viewerZoom" type="button" title="点击还原缩放" aria-label="还原缩放">100%</button>
     </div>
     <aside class="viewer-side">
       <div class="viewer-heading">
@@ -443,7 +448,7 @@ main{padding:22px 0 54px}
         <a class="open-btn" id="openImage" href="#" target="_blank" rel="noopener noreferrer"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M14 4h6v6m0-6-9 9M19 14v6H4V5h6"/></svg>新窗口打开</a>
       </div>
       <dl class="metadata" id="viewerMeta"></dl>
-      <div class="keyboard-help"><kbd>←</kbd> <kbd>→</kbd> 切换角度　<kbd>↑</kbd> <kbd>↓</kbd> 切换姿势<br><kbd>Esc</kbd> 关闭 · 手机可左右滑动切换角度</div>
+      <div class="keyboard-help"><kbd>←</kbd> <kbd>→</kbd> 切换角度　<kbd>↑</kbd> <kbd>↓</kbd> 切换姿势<br><kbd>滚轮</kbd> 缩放　<kbd>拖拽</kbd> 平移　<kbd>双击</kbd> 放大/还原<br><kbd>Esc</kbd> 关闭 · 手机可左右滑动切换角度</div>
     </aside>
   </section>
 </div>
@@ -762,6 +767,7 @@ function showViewer() {
   image.src = item.缩略图;
   image.alt = `${item.姿势名称} · ${item.角度}`;
   image.classList.add('is-loading');
+  resetZoom();
   $('#imageStatus').textContent = '正在加载原图…';
   $('#imageStatus').hidden = false;
   const full = new Image();
@@ -771,6 +777,7 @@ function showViewer() {
     image.src = item.原图;
     image.classList.remove('is-loading');
     $('#imageStatus').hidden = true;
+    applyZoom();
   };
   full.onerror = () => {
     if (token !== viewerState.token) return;
@@ -812,6 +819,95 @@ function stepPose(direction) {
   viewerState.item = currentList[next].group.angles[angle] || currentList[next].item;
   showViewer();
 }
+
+const ZOOM_MIN = 1;
+const ZOOM_MAX = 8;
+let zoom = ZOOM_MIN;
+let panX = 0;
+let panY = 0;
+let dragOrigin = null;
+
+function baseSize() {
+  const stage = $('#viewerStage');
+  const image = $('#viewerImage');
+  const sw = stage.clientWidth;
+  const sh = stage.clientHeight;
+  const nw = image.naturalWidth || 900;
+  const nh = image.naturalHeight || 1200;
+  const ratio = Math.min(sw / nw, sh / nh);
+  return { sw, sh, dw: nw * ratio, dh: nh * ratio };
+}
+
+function applyZoom() {
+  const { sw, sh, dw, dh } = baseSize();
+  const maxX = Math.max(0, (dw * zoom - sw) / 2);
+  const maxY = Math.max(0, (dh * zoom - sh) / 2);
+  panX = Math.min(maxX, Math.max(-maxX, panX));
+  panY = Math.min(maxY, Math.max(-maxY, panY));
+  $('#viewerImage').style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`;
+  $('#viewerStage').classList.toggle('is-zoomed', zoom > ZOOM_MIN + 0.001);
+  $('#viewerZoom').textContent = `${Math.round(zoom * 100)}%`;
+}
+
+function resetZoom() {
+  zoom = ZOOM_MIN;
+  panX = 0;
+  panY = 0;
+  dragOrigin = null;
+  $('#viewerStage').classList.remove('is-dragging');
+  applyZoom();
+}
+
+function zoomAt(clientX, clientY, next) {
+  const rect = $('#viewerStage').getBoundingClientRect();
+  const cx = clientX - rect.left - rect.width / 2;
+  const cy = clientY - rect.top - rect.height / 2;
+  const ratio = next / zoom;
+  panX = cx - (cx - panX) * ratio;
+  panY = cy - (cy - panY) * ratio;
+  zoom = next;
+  if (zoom <= ZOOM_MIN + 0.001) { zoom = ZOOM_MIN; panX = 0; panY = 0; }
+  applyZoom();
+}
+
+$('#viewerStage').addEventListener('wheel', event => {
+  event.preventDefault();
+  const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? 100 : 1;
+  const factor = Math.min(1.6, Math.max(0.62, Math.exp(-event.deltaY * unit * 0.0022)));
+  zoomAt(event.clientX, event.clientY, Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, zoom * factor)));
+}, { passive: false });
+
+$('#viewerStage').addEventListener('pointerdown', event => {
+  if (event.pointerType !== 'mouse' || event.button !== 0 || zoom <= ZOOM_MIN + 0.001) return;
+  if (event.target.closest('.viewer-nav, .viewer-zoom')) return;
+  dragOrigin = { id: event.pointerId, x: event.clientX, y: event.clientY, panX, panY };
+  try { $('#viewerStage').setPointerCapture(event.pointerId); } catch { /* 合成事件或部分浏览器不支持捕获，忽略 */ }
+  $('#viewerStage').classList.add('is-dragging');
+});
+
+$('#viewerStage').addEventListener('pointermove', event => {
+  if (!dragOrigin || event.pointerId !== dragOrigin.id) return;
+  panX = dragOrigin.panX + event.clientX - dragOrigin.x;
+  panY = dragOrigin.panY + event.clientY - dragOrigin.y;
+  applyZoom();
+});
+
+['pointerup', 'pointercancel'].forEach(type => {
+  $('#viewerStage').addEventListener(type, event => {
+    if (!dragOrigin || event.pointerId !== dragOrigin.id) return;
+    dragOrigin = null;
+    $('#viewerStage').classList.remove('is-dragging');
+  });
+});
+
+$('#viewerStage').addEventListener('dblclick', event => {
+  if (event.target.closest('.viewer-nav, .viewer-zoom')) return;
+  if (zoom > ZOOM_MIN + 0.001) resetZoom();
+  else zoomAt(event.clientX, event.clientY, 2.5);
+});
+
+$('#viewerZoom').addEventListener('click', resetZoom);
+window.addEventListener('resize', () => { if (!$('#viewer').hidden) applyZoom(); });
 
 $('#viewerClose').addEventListener('click', closeViewer);
 $('#viewer').addEventListener('click', event => { if (event.target === $('#viewer')) closeViewer(); });
@@ -865,7 +961,7 @@ document.addEventListener('keydown', event => {
 const INFO = {
   guide: {
     title: '使用指南',
-    html: '<ul><li>将参考图导入各类 AI 工具的<strong>姿势参考 / 构图参考</strong>功能。</li><li>同一姿势连续使用多个视角，更容易保持生成图片或视频中的姿态一致。</li><li>点击卡片或缩略图进入大图，可下载 <strong>900 × 1200 原尺寸 PNG</strong>，便于查看细节。</li><li>图片为无五官的灰色人体素体线稿，不包含面部、服装与背景，请通过提示词或其他参考图补充。</li><li>电脑端使用 <strong>← / →</strong> 切换角度，<strong>↑ / ↓</strong> 切换姿势；手机端可左右滑动大图。</li></ul>'
+    html: '<ul><li>将参考图导入各类 AI 工具的<strong>姿势参考 / 构图参考</strong>功能。</li><li>同一姿势连续使用多个视角，更容易保持生成图片或视频中的姿态一致。</li><li>点击卡片或缩略图进入大图，默认<strong>完整显示整张图</strong>，可下载 <strong>900 × 1200 原尺寸 PNG</strong>，便于查看细节。</li><li>大图内<strong>滚动鼠标滚轮</strong>以光标为中心放大缩小（1×–8×），放大后可<strong>按住拖拽</strong>平移，<strong>双击</strong>或点击右下角百分比徽标还原。</li><li>图片为无五官的灰色人体素体线稿，不包含面部、服装与背景，请通过提示词或其他参考图补充。</li><li>电脑端使用 <strong>← / →</strong> 切换角度，<strong>↑ / ↓</strong> 切换姿势；手机端可左右滑动大图。</li></ul>'
   },
   notice: {
     title: '注意事项',
